@@ -3,11 +3,12 @@
   "updated_at": "2026-04-28T00:00:00Z",
   "providers": {
     "openai": {
-      "default_model": "gpt-5.5",
+      "default_model": "gpt-5.4-nano",
       "additional_visible_models": [
-        { "name": "gpt-5.5" },
-        { "name": "gpt-5.4" },
-        { "name": "gpt-5.2" }
+        { 
+          "name": "gpt-5.4-nano" ,
+          "display_name": "GPT 5.4"
+        }
       ]
     },
     "anthropic": {
