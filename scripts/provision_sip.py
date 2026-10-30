@@ -955,6 +955,10 @@ def create_twilio_credential_list(
         inputs,
         status="pending_twilio_credential_create",
         twilio_credential_list_sid=list_sid,
+        resources_created_by_helper=append_resource_tag(
+            session.load_raw().get("resources_created_by_helper", ""),
+            "twilio_credential_list",
+        ),
         setup_metadata=build_setup_metadata(
             inputs,
             domain_name=session.load_raw().get("domain_name", ""),
@@ -1004,10 +1008,6 @@ def create_twilio_credential_list(
         inputs,
         status="twilio_termination_configured",
         twilio_credential_list_sid=list_sid,
-        resources_created_by_helper=append_resource_tag(
-            session.load_raw().get("resources_created_by_helper", ""),
-            "twilio_credential_list",
-        ),
         setup_metadata=build_setup_metadata(
             inputs,
             domain_name=session.load_raw().get("domain_name", ""),
@@ -1188,7 +1188,20 @@ async def create_livekit_outbound_trunk(
                 raise ProvisionError(
                     "LiveKit outbound trunk create returned no id; reconcile before retry"
                 )
-            return str(trunk_id)
+            trunk_id_str = str(trunk_id)
+            record_intent(
+                session,
+                inputs,
+                status="pending_livekit_outbound_trunk_verify",
+                livekit_outbound_trunk_id=trunk_id_str,
+                domain_name=domain_name,
+                resources_created_by_helper=append_resource_tag(
+                    session.load_raw().get("resources_created_by_helper", ""),
+                    "livekit_outbound_trunk",
+                ),
+                setup_metadata=build_setup_metadata(inputs, domain_name=domain_name),
+            )
+            return trunk_id_str
         finally:
             await lkapi.aclose()
 
@@ -1243,10 +1256,6 @@ async def create_livekit_outbound_trunk(
         status="complete",
         livekit_outbound_trunk_id=trunk_id,
         domain_name=domain_name,
-        resources_created_by_helper=append_resource_tag(
-            session.load_raw().get("resources_created_by_helper", ""),
-            "livekit_outbound_trunk",
-        ),
         setup_metadata=build_setup_metadata(inputs, domain_name=domain_name),
     )
     return trunk_id
