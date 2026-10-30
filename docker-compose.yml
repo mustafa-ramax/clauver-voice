@@ -12,8 +12,8 @@ services:
       #   cloud   → agent-cloud.py (LiveKit-only booking agent)
       #   local   → agent-local.py (local booking agent with external keys)
       AGENT_MODE: ${AGENT_MODE:-default}
-    volumes:
-      - .:/app
+      # LiveKit production worker (use "dev" only for interactive debugging)
+      CLAUVER_WORKER_COMMAND: ${CLAUVER_WORKER_COMMAND:-start}
     restart: unless-stopped
     tty: true
     stdin_open: true

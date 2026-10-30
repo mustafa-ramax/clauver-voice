@@ -29,8 +29,11 @@ RUN curl -fsSL https://get.livekit.io/cli | bash \
 
 COPY . .
 
+RUN sed -i 's/\r$//' docker/entrypoint.sh \
+    && chmod +x docker/entrypoint.sh
+
 # Download required models (turn detector, etc.)
-RUN python agent.py download-files || echo "download-files step failed, please check manually"
+RUN python agent.py download-files
 
 # Default entrypoint selects which agent to run based on $AGENT_MODE:
 #   default → agent.py

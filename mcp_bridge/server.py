@@ -50,7 +50,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "boss": {
                         "type": "string",
-                        "description": "Optional name of the user the assistant is speaking for; defaults to Max",
+                        "description": "Optional name of the user the assistant is speaking for; defaults to BOSS_NAME",
                     },
                 },
                 "required": ["phone_number", "task"],
@@ -73,7 +73,7 @@ async def call_tool(
         phone_number=args.get("phone_number"),
         task=args.get("task"),
         target_name=args.get("target_name"),
-        boss=args.get("boss", "boss"),
+        boss=args.get("boss"),
     )
 
     return [

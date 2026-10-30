@@ -22,9 +22,18 @@ case "$AGENT_MODE" in
 esac
 
 if [[ $# -gt 0 ]]; then
-  echo "[entrypoint] Executing custom command: $*"
+  echo "[entrypoint] Executing custom command: $*" >&2
   exec "$@"
 else
-  echo "[entrypoint] Starting Clauver agent ($AGENT_MODE) → python $TARGET dev ..."
-  exec python "$TARGET" dev
+  WORKER_CMD="${CLAUVER_WORKER_COMMAND:-start}"
+  case "$WORKER_CMD" in
+    start|dev)
+      ;;
+    *)
+      echo "[entrypoint] Invalid CLAUVER_WORKER_COMMAND: $WORKER_CMD (expected: start|dev)" >&2
+      exit 1
+      ;;
+  esac
+  echo "[entrypoint] Starting Clauver agent ($AGENT_MODE) → python $TARGET $WORKER_CMD ..." >&2
+  exec python "$TARGET" "$WORKER_CMD"
 fi
