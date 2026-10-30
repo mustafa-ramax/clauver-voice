@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from dotenv import load_dotenv
 import json
 import os
@@ -29,13 +30,12 @@ from livekit.plugins import (
     noise_cancellation,  # noqa: F401
 )
 from livekit.plugins.turn_detector.english import EnglishModel
-from requests import session
+
+from mcp_bridge.lib.config import ensure_worker_env, get_agent_name, get_llm_model
 
 load_dotenv(dotenv_path=".env")
 logger = logging.getLogger("clauver-general-agent")
 logger.setLevel(logging.INFO)
-
-outbound_trunk_id = os.getenv("SIP_OUTBOUND_TRUNK_ID")
 
 
 class OutboundCaller(Agent):
@@ -82,16 +82,10 @@ class OutboundCaller(Agent):
             - Use `save_result` only after:
             - you have delivered the message, and
             - the other person has replied (or clearly has nothing to add).
+            - Do NOT say a goodbye or summary before calling it — `save_result` handles closing.
             - Use `handle_voicemail` if you reach voicemail or a beep.
             - Use `transfer_call` only if they clearly want to speak to a human urgently.
-            - Use `end_call` only after your final thanks and goodbye are fully spoken.
-
-            Ending the call:
-            1. Briefly summarise what you will pass back to {boss}, out loud.
-            2. You MUST always thank them explicitly (e.g. "Thanks for your help" or "Thanks for your time").
-            3. You MUST say a short, warm goodbye out loud (e.g. "Take care, bye").
-            4. Only after your spoken goodbye is fully finished, call `end_call`.
-            5. Do not call `end_call` before you have both thanked them and said goodbye.
+            - Use `end_call` only if `save_result` is not appropriate and you have already spoken thanks and goodbye.
 
             General rules:
             - Let them finish speaking.
@@ -105,6 +99,11 @@ class OutboundCaller(Agent):
         self.boss = boss
         self.task = task
         self.target_name = target_name
+        self._save_result_recorded = False
+        self._goodbye_spoken = False
+        self._closing_in_progress = False
+        self._hangup_completed = False
+        self._call_ended = False
         self.call_result: dict[str, Any] = {
             "status": "unknown",
             "outcome": None,
@@ -115,14 +114,24 @@ class OutboundCaller(Agent):
         self.participant = participant
 
     async def hangup(self):
-        """Helper function to hang up the call by deleting the room"""
+        """Hang up by deleting the room. Idempotent after a successful delete."""
+        if self._hangup_completed:
+            return
+
         job_ctx = get_job_context()
         await asyncio.sleep(1)
-        await job_ctx.api.room.delete_room(
-            api.DeleteRoomRequest(
-                room=job_ctx.room.name,
+        try:
+            await job_ctx.api.room.delete_room(
+                api.DeleteRoomRequest(
+                    room=job_ctx.room.name,
+                )
             )
-        )
+        except Exception as e:
+            logger.error("error hanging up call: %s", e)
+            raise
+
+        self._hangup_completed = True
+        self._call_ended = True
 
     @function_tool()
     async def transfer_call(self, ctx: RunContext):
@@ -165,7 +174,10 @@ class OutboundCaller(Agent):
 
         await ctx.wait_for_playout()
         await asyncio.sleep(1)
-        await self.hangup()
+        try:
+            await self.hangup()
+        except Exception:
+            return "Hangup failed; cleanup pending."
         return "Call ended."
 
     @function_tool()
@@ -208,23 +220,93 @@ class OutboundCaller(Agent):
             f"saving result for {self.participant.identity}: status={status}, outcome={outcome}, details={details}"
         )
 
-        self.call_result = {
-            "status": status,
-            "outcome": outcome,
-            "details": details,
-        }
+        if self._hangup_completed:
+            return "Call already ended."
 
-        await ctx.session.generate_reply(
-            instructions=(
-                f"Briefly and very shortly summarise what you will pass back to {self.boss}. "
-                f"Then explicitly thank them for their time or help, and say a short warm goodbye. "
-                f"Keep it natural and concise."
+        if self._closing_in_progress:
+            return (
+                "Closing already in progress; wait for the current goodbye "
+                "and hangup to finish."
             )
-        )
 
-        return "Result saved and final closing spoken."
+        if self._save_result_recorded:
+            try:
+                await self.hangup()
+            except Exception:
+                return (
+                    "Result already recorded; hangup failed; cleanup pending "
+                    "(try end_call)."
+                )
+            return "Call ended."
+
+        self._save_result_recorded = True
+        self._closing_in_progress = True
+        try:
+            self.call_result = {
+                "status": status,
+                "outcome": outcome,
+                "details": details,
+            }
+
+            speech_error: BaseException | None = None
+            hangup_error: BaseException | None = None
+            try:
+                if not self._goodbye_spoken:
+                    self._goodbye_spoken = True
+                    try:
+                        reply_handle = await ctx.session.say(
+                            f"Thanks for your time — I'll pass that along to {self.boss}. Take care, bye!",
+                            allow_interruptions=False,
+                        )
+                        if reply_handle:
+                            await reply_handle.wait_for_playout()
+                    except BaseException as e:
+                        speech_error = e
+                        logger.error(
+                            "error speaking goodbye after save_result: %s", e
+                        )
+            finally:
+                try:
+                    await asyncio.sleep(0.8)
+                    if not self._hangup_completed:
+                        await asyncio.shield(self.hangup())
+                except BaseException as e:
+                    hangup_error = e
+                    logger.error("error hanging up after save_result: %s", e)
+
+            if hangup_error or not self._hangup_completed:
+                if isinstance(speech_error, asyncio.CancelledError) or isinstance(
+                    hangup_error, asyncio.CancelledError
+                ):
+                    return (
+                        "Result recorded; cleanup did not complete due to cancellation."
+                    )
+                if speech_error and hangup_error:
+                    return (
+                        "Result recorded, but goodbye speech and hangup failed; "
+                        "cleanup pending (try end_call)."
+                    )
+                return (
+                    "Result recorded, but hangup failed; cleanup pending (try end_call)."
+                )
+
+            if isinstance(speech_error, asyncio.CancelledError):
+                return (
+                    "Result recorded and call ended, but goodbye was cancelled "
+                    "before it finished."
+                )
+            if speech_error:
+                return (
+                    "Result recorded and call ended, but goodbye speech failed "
+                    "before hangup."
+                )
+            return "Result saved and call ended."
+        finally:
+            self._closing_in_progress = False
 
 async def entrypoint(ctx: JobContext):
+    outbound_trunk_id = os.environ["SIP_OUTBOUND_TRUNK_ID"]
+
     logger.info(f"connecting to room {ctx.room.name}")
     await ctx.connect()
 
@@ -234,7 +316,7 @@ async def entrypoint(ctx: JobContext):
 
     participant_identity = phone_number = dial_info["phone_number"]
     target_name = dial_info.get("target_name", None)
-    boss = dial_info.get("boss", "Max")
+    boss = dial_info.get("boss") or os.environ.get("BOSS_NAME") or "Boss"
     task = dial_info.get(
         "task",
         f"Call on behalf of {boss}, introduce yourself clearly, and help with their request.",
@@ -267,7 +349,7 @@ async def entrypoint(ctx: JobContext):
             model="sonic-turbo",
             voice="a4a16c5e-5902-4732-b9b6-2a48efd2e11b",
         ),
-        llm=openai.LLM(model="gpt-5.3-chat-latest"),
+        llm=openai.LLM(model=get_llm_model()),
     )
 
     session_started = asyncio.create_task(
@@ -318,11 +400,22 @@ def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
     
 if __name__ == "__main__":
+    cli_args = sys.argv[1:]
+    subcommand = cli_args[0] if cli_args else None
+    skip_worker_env = (
+        subcommand in (None, "download-files")
+        or "--help" in cli_args
+        or "-h" in cli_args
+    )
+    if not skip_worker_env and subcommand in ("start", "dev"):
+        ensure_worker_env()
+        get_llm_model()
+
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             prewarm_fnc=prewarm,
-            agent_name="clauver-general",
+            agent_name=get_agent_name(),
             num_idle_processes=2,
         )
     )

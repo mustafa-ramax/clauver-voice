@@ -20,7 +20,7 @@ async def dispatch_clauver_call(
     phone_number: str,
     task: str,
     target_name: str | None = None,
-    boss: str = "Max",
+    boss: str | None = None,
 ) -> dict[str, Any]:
     """
     Validate inputs and create a LiveKit dispatch for a Clauver outbound call.
