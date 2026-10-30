@@ -32,6 +32,8 @@ docker/*.log
 
 README.md
 CLAUDE.md
+PLAN.md
+plan.md
 LICENSE
 renovate.json
 taskfile.yaml
